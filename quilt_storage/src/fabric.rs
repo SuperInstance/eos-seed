@@ -113,6 +113,17 @@ impl Fabric {
         self.map.flush()
     }
 
+    /// Pre-allocate capacity for `rows` rows up front (single set_len).
+    /// Appends after this only grow the header row count, not the file.
+    pub fn preallocate(&mut self, rows: u64) -> io::Result<()> {
+        let need = HEADER_LEN + rows * self.cols * 4;
+        if (self.map.len() as u64) < need {
+            self.file.set_len(need)?;
+            self.map = unsafe { MmapMut::map_mut(&self.file)? };
+        }
+        Ok(())
+    }
+
     /// Durability point: flush data pages to disk.
     pub fn sync(&self) -> io::Result<()> {
         self.map.flush()?;
@@ -169,3 +180,6 @@ mod tests {
         let _ = f.append(&[1.0, 2.0]);
     }
 }
+
+/// Casey-lane alias: the fabric as the OS's main memory-mapped store.
+pub type MemoryMappedFabric = Fabric;

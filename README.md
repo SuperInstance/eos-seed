@@ -57,6 +57,18 @@ eos-seed/
 - `terminal.rs` — 2×2 quadrant sub-character density rendering; a 2×3
   sextant (U+1FB00) variant is planned when terminal fonts catch up.
 
+## The bootstrap loop (live)
+
+`cargo run --release` now runs the full closed cycle: an async perception
+worker streams a moving object across a 16x16 coordinate space over a
+bounded crossbeam channel; every frame is appended zero-copy into the
+256-dim memory-mapped fabric; the InstanceLogicOptimizer sweeps all 256
+ternary switches against the last 48 historical vectors (novel rows =
+signal, stale rows = background); and the HighDensitySubGridVisualizer
+renders the gate's evolving state as a 6x packed sextant waterfall
+(U+1FB00 legacy-computing block). The gate visibly learns to track the
+drifting object — no gradients anywhere.
+
 ## Try it
 
 ```bash

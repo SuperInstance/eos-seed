@@ -191,3 +191,6 @@ mod tests {
         assert_eq!(g.score_row_bytes(&bytes), expect);
     }
 }
+
+/// Casey-lane alias: the packed array as a gating head over cells.
+pub type PackedTernaryHead = PackedTernary;

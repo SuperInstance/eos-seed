@@ -140,3 +140,58 @@ mod tests {
         }
     }
 }
+
+/// One coordinate pass over a *cache* of historical rows (not the whole
+/// fabric). This is the per-frame loop: cheap, bounded, and enough for the
+/// gate to track a moving signal.
+pub fn run_pass_cached(
+    gate: &mut PackedTernary,
+    fabric: &Fabric,
+    cache_rows: &[u64],
+    targets: &[i64],
+) -> (i64, usize) {
+    let eval = |g: &PackedTernary| -> i64 {
+        let mut err: i64 = 0;
+        for (i, &r) in cache_rows.iter().enumerate() {
+            let s = g.score_row(fabric.row(r));
+            err += (s - targets[i]).abs();
+        }
+        err
+    };
+    let mut changed = 0usize;
+    for cell in 0..gate.len() {
+        let original = gate.get(cell);
+        let mut best_state = original;
+        let mut best_err = i64::MAX;
+        for &state in &CANDIDATE_STATES {
+            gate.set(cell, state);
+            let e = eval(gate);
+            if e < best_err {
+                best_err = e;
+                best_state = state;
+            }
+        }
+        gate.set(cell, best_state);
+        if best_state != original {
+            changed += 1;
+        }
+    }
+    (eval(gate), changed)
+}
+
+/// The spreadsheet instance-logic optimizer, named per the eOS spec.
+pub struct InstanceLogicOptimizer;
+
+impl InstanceLogicOptimizer {
+    /// Per-frame discrete sweep: flash {-1, 0, +1} per cell across the
+    /// 2-bit matrix blocks, score contrastive reconstruction error over the
+    /// cached historical vectors, commit the minimum-loss state.
+    pub fn sweep(
+        gate: &mut PackedTernary,
+        fabric: &Fabric,
+        cache_rows: &[u64],
+        targets: &[i64],
+    ) -> (i64, usize) {
+        run_pass_cached(gate, fabric, cache_rows, targets)
+    }
+}

@@ -1,20 +1,38 @@
-//! eos_runtime — E2E runtime broker, worker ring, and the eOS loop.
+//! eos_runtime — the bootstrap loop of the Epigenetic Operating System.
 //!
-//! The click-and-play seed: simulated log vectors flow through the fabric,
-//! a worker ring scores candidate switch states in parallel (results merged
-//! in deterministic order), and the coordinate stepper commits the winners.
-//! Deterministic despite parallelism: jobs are pure functions of
-//! (row-snapshot, state), and the merge order is fixed.
+//! The closed-loop validation cycle, per the eOS spec:
+//!   1. INGEST      — MemoryMappedFabric pre-allocated for a 256-dim matrix
+//!                    (16x16 down-sampled state snapshots)
+//!   2. PERCEPTION  — a deterministic mock stream: an object moving across
+//!                    the 16x16 coordinate space, appended zero-copy
+//!   3. DISCRETE OPTIMIZATION — InstanceLogicOptimizer sweeps the 2-bit
+//!                    packed PackedTernaryHead cell-by-cell every frame,
+//!                    flashing {-1, 0, +1} and committing whichever state
+//!                    minimizes contrastive reconstruction error over the
+//!                    cached historical vectors — no gradients, no PyTorch
+//!   4. VISUAL      — HighDensitySubGridVisualizer renders the live gate
+//!                    state as a 6x packed sextant waterfall
+//!
+//! Deterministic: fixed seed, fixed walk, fixed cache policy.
 
 mod broker;
 mod terminal;
 
+use exoj_kernel::optimization::InstanceLogicOptimizer;
+use exoj_kernel::ternary::PackedTernaryHead;
 use exoj_kernel::inverse_physics::infer_targets;
-use exoj_kernel::optimization::{run_pass, run_to_convergence, Objective};
-use exoj_kernel::ternary::PackedTernary;
-use quilt_storage::fabric::Fabric;
+use quilt_storage::fabric::MemoryMappedFabric;
+
+use terminal::HighDensitySubGridVisualizer;
 
 use broker::Capabilities;
+
+const GRID: usize = 16; // 16x16 coordinate space
+const DIMS: usize = GRID * GRID; // 256 structural dimensions
+const FRAMES: usize = 96;
+const CACHE_ROWS: usize = 48; // historical vectors the optimizer scores over
+const NOVEL_WINDOW: usize = 8; // newest cache rows count as "signal"
+const TARGET: i64 = 256;
 
 /// Deterministic xorshift64* — the only randomness in the seed.
 struct Lcg(u64);
@@ -29,116 +47,90 @@ impl Lcg {
 }
 
 fn main() {
-    const DIMS: usize = 32;
-    const ROWS: usize = 96;
-    const CLASSES: usize = 3;
-    const ROWS_PER_CLASS: usize = ROWS / CLASSES;
-    const SEED: u64 = 2718;
-
     let caps = Capabilities::detect();
-    println!("broker: {} cores ({} in ring), {} arch, {} MiB",
-             caps.logical_cores, caps.ring_size(), caps.arch,
-             caps.total_mem_kib.unwrap_or(0) / 1024);
+    println!("broker: {} cores ({} ring), {} arch, {} MiB — eOS bootstrap loop",
+             caps.logical_cores, caps.ring_size(), caps.arch, caps.total_mem_kib.unwrap_or(0) / 1024);
 
-    // ---- 1. fabric: simulated sonar log, class-signature rows -------------
-    let tmp = std::env::temp_dir().join("eos-seed-demo.fab");
-    let _ = std::fs::remove_file(&tmp);
-    let mut fabric = Fabric::create(&tmp, DIMS as u64).expect("create fabric");
-    let mut rng = Lcg(SEED);
-    for row in 0..ROWS {
-        let class = row / ROWS_PER_CLASS;
-        let mut v = [0.0f32; DIMS];
-        for c in v.iter_mut() { *c = rng.unit() * 0.5; }
-        let base = class * 8;
-        let sign = if class == 2 { -8.0 } else { 8.0 };
-        for k in 0..4 { v[base + k] = sign + rng.unit() * 0.25; }
-        fabric.append(&v).expect("append row");
-    }
-    println!("fabric: {ROWS} rows × {DIMS} dims at {}", tmp.display());
+    // ---- 1. INGEST: pre-allocate the 256-dim fabric on disk ----------------
+    let path = std::env::temp_dir().join("eos-bootstrap.fab");
+    let _ = std::fs::remove_file(&path);
+    let mut fabric = MemoryMappedFabric::create(&path, DIMS as u64).expect("fabric");
+    fabric.preallocate((FRAMES + 8) as u64).expect("preallocate");
 
-    // ---- 2. inverse physics: the log names its own targets ----------------
-    let (targets, _signs) = infer_targets(&fabric);
-    println!("inverse physics: targets inferred ±{}", targets[0].abs());
+    // ---- 2+3+4. perception -> discrete sweep -> sextant waterfall ----------
+    let mut gate = PackedTernaryHead::seeded(DIMS, 2718);
+    let mut viz = HighDensitySubGridVisualizer::new(GRID / 2, GRID / 3 + 1); // 8 x 6 cells = full 16x16 grid
 
-    // ---- 3. worker ring: parallel candidate scoring over snapshots --------
-    // Fabric stays single-owner; workers see an immutable Arc snapshot.
-    // Jobs are pure (row-snapshot, state) -> score, so parallelism cannot
-    // perturb determinism.
-    let ring = caps.ring_size();
-    let snapshot: std::sync::Arc<Vec<Vec<f32>>> = std::sync::Arc::new(
-        (0..(ring * 2).min(ROWS) as u64)
-            .map(|r| fabric.row(r).to_vec())
-            .collect(),
-    );
-    let (job_tx, job_rx) = crossbeam_channel::bounded::<(usize, i8)>(ring * 4);
-    let (res_tx, res_rx) = crossbeam_channel::bounded::<(usize, i8, i64)>(ring * 4);
-    let handles: Vec<_> = (0..ring)
-        .map(|w| {
-            let job_rx = job_rx.clone();
-            let res_tx = res_tx.clone();
-            let snapshot = snapshot.clone();
-            std::thread::spawn(move || {
-                broker::pin_worker(w);
-                for (row, state) in job_rx {
-                    let mut score = 0i64;
-                    for v in &snapshot[row] {
-                        let q = PackedTernary::quantize_bits(v.to_bits()) as i64;
-                        match state {
-                            1 => score += q,
-                            -1 => score -= q,
-                            _ => {}
-                        }
-                    }
-                    res_tx.send((row, state, score)).unwrap();
-                }
-            })
+    println!("loop: {FRAMES} frames, {DIMS} dims, cache {CACHE_ROWS}, target ±{TARGET}");
+    println!("legend: object dot = perception input | lit sextants = gate +1 cells");
+
+    // async perception: a background worker generates the mock camera
+    // stream and ships frames over a bounded crossbeam channel — the
+    // thread boundary is a plain message, no shared mutable state.
+    let (frame_tx, frame_rx) = crossbeam_channel::bounded::<(usize, usize, [f32; DIMS])>(4);
+    let perceiver = {
+        std::thread::spawn(move || {
+            broker::pin_worker(1); // best-effort: perceiver on its own core
+            let mut rng = Lcg(2718);
+            for frame in 0..FRAMES {
+                let t = frame as f32;
+                let ox = ((t / 9.0).sin() * 6.5 + 7.5).round().clamp(0.0, 15.0) as usize;
+                let oy = ((t / 6.0).cos() * 5.5 + 7.5).round().clamp(0.0, 15.0) as usize;
+                let mut v = [0.0f32; DIMS];
+                for c in v.iter_mut() { *c = rng.unit() * 0.4; } // ambient noise
+                v[oy * GRID + ox] = 8.0; // the hot structural cell
+                if frame_tx.send((ox, oy, v)).is_err() { break; }
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
         })
-        .collect();
-    for w in 0..ring.min(snapshot.len()) {
-        job_tx.send((w, if w % 2 == 0 { 1 } else { -1 })).unwrap();
+    };
+
+    for frame in 0..FRAMES {
+        // -- perception feed: receive from the background worker, zero-copy --
+        let (ox, oy, v) = frame_rx.recv().expect("perceiver alive");
+        fabric.append(&v).expect("append frame");
+
+        // -- discrete optimization: sweep the 2-bit matrix over the cache ---
+        let rows_so_far = fabric.rows();
+        let cache_start = rows_so_far.saturating_sub(CACHE_ROWS as u64);
+        let cache: Vec<u64> = (cache_start..rows_so_far).collect();
+        // contrastive targets: newest NOVEL_WINDOW rows are the signal (high),
+        // the older history is background (low) — the gate must learn to
+        // respond to the moving object and reject the stale past.
+        let split = cache.len().saturating_sub(NOVEL_WINDOW);
+        let targets: Vec<i64> = (0..cache.len())
+            .map(|i| if i >= split { TARGET } else { -TARGET })
+            .collect();
+        let (err, changed) = InstanceLogicOptimizer::sweep(&mut gate, &fabric, &cache, &targets);
+
+        // -- visual: sextant waterfall frame --------------------------------
+        viz.clear_canvas();
+        // input layer: the object's true position (top-left half of frame)
+        viz.set_sub_pixel(ox / 2, 0, true);
+        // state layer: every +1 gate cell lights its sub-pixel (16x16 layout)
+        for cell in 0..DIMS {
+            if gate.get(cell) == 1 {
+                viz.set_sub_pixel(cell % GRID, cell / GRID, true);
+            }
+        }
+        let art = viz.render();
+        println!("f{frame:03} obj=({ox:2},{oy:2}) err={err:6} flips={changed:3}");
+        print!("{art}");
+
+        // gate state summary line: how many + / - / 0
+        let (mut p, mut m) = (0usize, 0usize);
+        for c in 0..DIMS {
+            match gate.get(c) { 1 => p += 1, -1 => m += 1, _ => {} }
+        }
+        println!("  gate: +{p} -{m} 0-{} | object drifts, gate follows", DIMS - p - m);
+        std::thread::sleep(std::time::Duration::from_millis(45));
     }
-    drop(job_tx); // close the job channel: workers drain and exit
-    drop(res_tx); // close results from the main side: drain terminates
-    let mut audited = 0usize;
-    for _ in res_rx { audited += 1; }
-    for h in handles { h.join().unwrap(); }
-    println!("worker ring: {ring} pinned threads audited {audited} cell candidates");
 
-    // ---- 4. the loop: flash-and-commit to convergence ----------------------
-    let objective = Objective { fabric: &fabric, targets: &targets };
-    let mut gate = PackedTernary::seeded(DIMS, SEED);
-    println!("initial gate error: {}", objective.total_error(&gate));
-    println!("gate at seed:");
-    print!("{}", terminal::render_gate(&(0..DIMS).map(|c| gate.get(c)).collect::<Vec<_>>()));
+    let _ = perceiver.join();
 
-    let trace = run_to_convergence(&mut gate, &objective, 12);
-    println!("pass trace (total |score-target|):");
-    for (i, e) in trace.iter().enumerate() { println!("  pass {i}: {e}"); }
-
-    println!("per-class mean scores after evolution:");
-    for class in 0..CLASSES {
-        let lo = (class * ROWS_PER_CLASS) as u64;
-        let mean: f64 = (lo..lo + ROWS_PER_CLASS as u64)
-            .map(|r| gate.score_row(fabric.row(r)) as f64)
-            .sum::<f64>() / ROWS_PER_CLASS as f64;
-        println!("  class {class}: {mean:.1}");
-    }
-    println!("evolved gate:");
-    print!("{}", terminal::render_gate(&(0..DIMS).map(|c| gate.get(c)).collect::<Vec<_>>()));
-
-    // luminance view of the log itself: signature rows should visibly glow
-    let field: Vec<Vec<f32>> = (0..24usize)
-        .map(|r| {
-            let row = fabric.row((r * 4) as u64);
-            (0..DIMS).map(|c| {
-                let q = PackedTernary::quantize_bits(row[c].to_bits()) as f32;
-                ((q.abs() - 48.0) / 32.0).clamp(0.0, 1.0) // highlight signature dims
-            }).collect()
-        })
-        .collect();
-    println!("fabric luminance (24 of 96 rows, signature dims glowing):");
-    print!("{}", terminal::render_luminance(&field));
-
-    let (err, changed) = run_pass(&mut gate, &objective, None);
-    println!("audit pass: error {err}, {changed} cells changed — the seed lives.");
+    // ---- final audit --------------------------------------------------------
+    let (targets, _) = infer_targets(&fabric);
+    let objective = exoj_kernel::optimization::Objective { fabric: &fabric, targets: &targets };
+    println!("final whole-fabric error under evolved gate: {}", objective.total_error(&gate));
+    println!("bootstrap complete — the seed learned to track.");
 }
