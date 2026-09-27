@@ -1,0 +1,6 @@
+# Hardware engine acceleration profiles (Zen 5 / x86-64 native)
+[build]
+rustflags = [
+    "-C", "target-cpu=native",
+    "-C", "link-args=-Wl,-z,stack-size=8388608",  # protects deep search recursion
+]

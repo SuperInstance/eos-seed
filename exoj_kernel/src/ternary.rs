@@ -1,4 +1,4 @@
-//! exoj_kernel — the 2-bit packed gating array.
+//! ternary.rs — the 2-bit packed gating array.
 //!
 //! Every byte holds exactly four base-3 states, 2 bits each:
 //!   `00` = 0  Muted

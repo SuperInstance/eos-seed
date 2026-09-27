@@ -1,4 +1,4 @@
-//! quilt_storage — the shared matrix fabric.
+//! fabric.rs — memory-mapped continuous row vector matrix.
 //!
 //! A file-backed, memory-mapped append-only array of f32 rows.
 //! Layout: 64-byte aligned header, then rows × cols × 4 bytes of raw f32.
@@ -18,7 +18,7 @@ use memmap2::MmapMut;
 /// bytes 0..8   magic  b"EOSFAB01"
 /// bytes 8..16  rows   u64 LE — total rows appended
 /// bytes 16..24 cols   u64 LE — vector width (fixed at create)
-/// bytes 24..64 reserved, zero
+/// bytes 24..64 reserved for future tissue metadata
 pub const HEADER_LEN: u64 = 64;
 const MAGIC: &[u8; 8] = b"EOSFAB01";
 
@@ -162,13 +162,10 @@ mod tests {
     }
 
     #[test]
+    #[should_panic(expected = "vector width must match")]
     fn width_mismatch_panics() {
         let path = tmp("mismatch");
         let mut f = Fabric::create(&path, 3).unwrap();
-        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let _ = f.append(&[1.0, 2.0]);
-        }));
-        assert!(r.is_err());
-        std::fs::remove_file(&path).unwrap();
+        let _ = f.append(&[1.0, 2.0]);
     }
 }

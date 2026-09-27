@@ -1,4 +1,4 @@
-//! instance_logic — the coordinate stepper.
+//! optimization.rs — spreadsheet instance-logic coordinate steppers.
 //!
 //! Deterministic, gradient-free optimization over the packed 2-bit matrix.
 //! No backprop, no FP gradients: each pass walks the gate's cells in a fixed
@@ -10,8 +10,8 @@
 //! Error metric: sum over log rows of |score(row) − target(row)| (integers
 //! only; scores come from exoj_kernel's integer evaluation loop).
 
-use exoj_kernel::{PackedTernary, STATE_BLOCKED, STATE_MUTED, STATE_POSITIVE};
-use quilt_storage::Fabric;
+use crate::ternary::{PackedTernary, STATE_BLOCKED, STATE_MUTED, STATE_POSITIVE};
+use quilt_storage::fabric::Fabric;
 
 pub const CANDIDATE_STATES: [i8; 3] = [STATE_BLOCKED, STATE_MUTED, STATE_POSITIVE];
 

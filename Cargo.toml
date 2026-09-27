@@ -1,24 +1,12 @@
 [workspace]
-resolver = "2"
 members = [
-    "crates/quilt_storage",
-    "crates/exoj_kernel",
-    "crates/instance_logic",
+    "quilt_storage",
+    "exoj_kernel",
+    "eos_runtime",
 ]
-
-[package]
-name = "eos-seed"
-version = "0.1.0"
-edition = "2021"
-
-[dependencies]
-quilt_storage = { path = "crates/quilt_storage" }
-exoj_kernel = { path = "crates/exoj_kernel" }
-instance_logic = { path = "crates/instance_logic" }
-
-[[bin]]
-name = "eos-seed"
-path = "src/main.rs"
 
 [profile.release]
 opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"

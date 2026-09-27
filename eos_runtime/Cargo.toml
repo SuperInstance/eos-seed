@@ -1,8 +1,11 @@
 [package]
-name = "instance_logic"
+name = "eos_runtime"
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
 quilt_storage = { path = "../quilt_storage" }
 exoj_kernel = { path = "../exoj_kernel" }
+crossbeam-channel = "0.5"
+core_affinity = "0.8"
+memmap2 = "0.9"
