@@ -1,0 +1,8 @@
+[package]
+name = "instance_logic"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+quilt_storage = { path = "../quilt_storage" }
+exoj_kernel = { path = "../exoj_kernel" }
