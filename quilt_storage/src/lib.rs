@@ -4,4 +4,6 @@
 //! - [`telemetry`]: non-blocking NMEA & sensor ingest layouts
 
 pub mod fabric;
+pub mod shm;
+pub mod video;
 pub mod telemetry;
