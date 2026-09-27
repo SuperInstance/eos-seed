@@ -1,0 +1,19 @@
+# .quilt/links.yml — the Reader's Fold manifest (jev-quilt Law 6).
+# This repo carries NO verdicts about its neighbors — only content-addressed
+# pointers each reader folds under its own weights. Edit this file; never edit
+# the generated block in README.md by hand.
+
+repo: eos-seed
+family: quilt
+
+substrate:
+  - repo: quilt-dba
+  - repo: exoj
+
+provides:
+  - id: ternary-matmul-loop
+    what: a zero-VRAM 2-bit packed ternary matrix execution engine + no-backprop coordinate-stepper optimizer, closing the loop end-to-end on continuous embeddings
+
+related:
+  - repo: pong-quilt
+    why: sibling "learning without backprop" teaching artifact — genetic algorithm there, ternary coordinate-stepper here

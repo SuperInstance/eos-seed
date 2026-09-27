@@ -6,6 +6,65 @@ through a thin 2-bit packed ternary matrix, built on the `quilt-dba` and
 `exoj` architectural paradigms. Runs anywhere — including GitHub Codespaces
 — with `cargo run --release`.
 
+## The mental model
+
+Picture a spreadsheet that is only allowed three ink colors: black
+(`Blocked`, opposes), gray (`Muted`, ignores), and white (`Positive`,
+agrees). Every cell in that spreadsheet is a switch with exactly those three
+states — no smooth gradient between them, ever. Learning is **not** "nudge
+every weight a little in the gradient's direction" (backprop); it is "flip
+one stuck switch to whichever of the three colors currently makes today's
+row of numbers add up better, keep the switch if a flip doesn't help, and
+never look back." That is the entire optimizer
+(`exoj_kernel::optimization`) — a light-switch panel that anneals itself
+into agreement with what its own memory-mapped rows say, using only integer
+add/sub, never a floating-point multiply on the hot path.
+
+```
+   continuous embedding row (f32)
+            │
+            ▼  bit-shift quantize (bits >> 24, sign-preserved) — no FP multiply
+   ┌────────────────────────────────┐
+   │  N ternary switches             │  each byte packs 4 switches (2 bits each)
+   │  { -1 Blocked, 0 Muted, +1 Pos } │
+   └────────────────────────────────┘
+            │  score = integer add/sub against the last 48 historical rows
+            ▼
+   tracking error (lower is better) ──▶ flip one switch, keep the flip only
+            │                            if the error drops (else revert)
+            ▼
+   HighDensitySubGridVisualizer (sextant waterfall) — the gate visibly learns
+```
+
+Read the loop as one sentence: **a byte-packed panel of three-state
+switches anneals itself against its own memory-mapped history, using only
+integer arithmetic — no gradients, no floats on the hot path, no GPU.**
+
+## A worked example
+
+Take the shipped demo end to end. `cargo run --release` streams a 96-row ×
+32-dim simulated sonar log through the loop above. Three classes hide in
+that log, each with 4 "hot" dimensions (two positive, one negative) — the
+log never tells the gate which dimensions matter; `inverse_physics.rs`
+infers the targets from the log's own structure (per-sign median, snapped to
+what the quantizer can actually represent).
+
+```
+$ cargo run --release
+broker: 24 cores (8 in ring)
+inverse physics: targets inferred ±256
+initial gate error: 18219 -> converged: 15810
+class 0 mean score: +110   class 1: +163   class 2: -163
+```
+
+Read the trace as one sentence: the gate started 18,219 units wrong, the
+32-switch coordinate stepper walked it down to 15,810 with no gradient
+anywhere, and by the end the three classes separate cleanly in the score
+column (+110 / +163 / -163) — a real number a reader can reproduce with
+`cargo run --release`, not a claim. (The full 96×32 run behind "The
+bootstrap loop (live)" below is the same mechanism at the repo's actual
+scale, not a toy.)
+
 ## The tree
 
 ```
@@ -100,3 +159,37 @@ plug into the reserved seams without touching the kernel.
 Failures and calibrations are booked in `docs/LEDGER.md` — the first demo
 run used targets unreachable under the quantizer's scale and sat at a bad
 local minimum; the ledger keeps the lesson.
+
+## What a reader learns
+
+- **Learning does not require a gradient.** A fixed-order coordinate stepper
+  over a tiny discrete state space (`{-1, 0, +1}`) can track a moving target
+  using only integer add/sub and a keep-if-better rule.
+- **Quantization can replace multiplication.** `bits >> 24` (sign-preserved)
+  turns an f32 into a ternary state cheaply enough to run the whole loop
+  without a single FP multiply on the hot path.
+- **Targets can come from the data's own structure.** `inverse_physics.rs`
+  derives what "correct" means from the log's per-sign medians instead of a
+  human label — the fabric grades itself.
+- **Zero-copy is a design constraint, not an optimization.** The
+  memory-mapped fabric appends straight into the map; there is no
+  intermediate buffer to get out of sync with disk.
+- **Determinism is a feature you can point at.** Fixed seed, fixed walk
+  order, tie-keeps-current hysteresis — the same input always produces the
+  same converged state, and `cargo test --workspace --release` checks it.
+
+<!-- QUILT:LINKS:START — generated from .quilt/links.yml by quilt-links.mjs. Do not edit by hand. -->
+## Cross-pollination — the Reader's Fold
+
+*Part of the **quilt** family. Under [Law 6](https://github.com/SuperInstance/jev-quilt), this repo carries no verdicts about its neighbors — only content-addressed pointers you fold under your own weights.*
+
+**Grown on** — [quilt-dba](https://github.com/SuperInstance/quilt-dba), [exoj](https://github.com/SuperInstance/exoj)
+
+**Provides** (fold these from here)
+- `ternary-matmul-loop` — a zero-VRAM 2-bit packed ternary matrix execution engine + no-backprop coordinate-stepper optimizer, closing the loop end-to-end on continuous embeddings
+
+**Related** (1-hop siblings — Law 7)
+- [pong-quilt](https://github.com/SuperInstance/pong-quilt) — sibling "learning without backprop" teaching artifact — genetic algorithm there, ternary coordinate-stepper here
+
+<sub>Regenerate: `node quilt-links.mjs` · Fleet map: [FLEET.md](https://github.com/SuperInstance/fleet-seeds/blob/main/FLEET.md)</sub>
+<!-- QUILT:LINKS:END -->
